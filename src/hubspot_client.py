@@ -11,7 +11,9 @@ from utils import to_epoch_ms, end_of_day_epoch_ms
 logger = logging.getLogger(__name__)
 
 BASE_URL = "https://api.hubapi.com"
-RATE_LIMIT_DELAY = 0.2  # seconds between API calls
+RATE_LIMIT_DELAY = 0.15  # seconds between API calls
+ASSOC_BATCH_SIZE = 100   # v4 batch associations endpoint limit
+SEARCH_PAGE_SIZE = 200   # CRM search max page size
 
 
 def _headers() -> dict:
@@ -33,50 +35,32 @@ def _post(url: str, payload: dict) -> dict:
     return resp.json()
 
 
-def _paginate_contacts(payload: dict) -> list[dict]:
-    """Paginate through CRM search results using the 'after' cursor."""
+def _paginate_search(object_type: str, payload: dict) -> list[dict]:
+    url = f"{BASE_URL}/crm/v3/objects/{object_type}/search"
+    payload.setdefault("limit", SEARCH_PAGE_SIZE)
     results = []
     after = None
     while True:
         if after:
             payload["after"] = after
-        data = _post(f"{BASE_URL}/crm/v3/objects/contacts/search", payload)
+        data = _post(url, payload)
         results.extend(data.get("results", []))
-        paging = data.get("paging", {})
-        after = paging.get("next", {}).get("after")
+        after = data.get("paging", {}).get("next", {}).get("after")
         if not after:
             break
     return results
+
+
+def _paginate_contacts(payload: dict) -> list[dict]:
+    return _paginate_search("contacts", payload)
 
 
 def _paginate_deals(payload: dict) -> list[dict]:
-    results = []
-    after = None
-    while True:
-        if after:
-            payload["after"] = after
-        data = _post(f"{BASE_URL}/crm/v3/objects/deals/search", payload)
-        results.extend(data.get("results", []))
-        paging = data.get("paging", {})
-        after = paging.get("next", {}).get("after")
-        if not after:
-            break
-    return results
+    return _paginate_search("deals", payload)
 
 
 def _paginate_companies(payload: dict) -> list[dict]:
-    results = []
-    after = None
-    while True:
-        if after:
-            payload["after"] = after
-        data = _post(f"{BASE_URL}/crm/v3/objects/companies/search", payload)
-        results.extend(data.get("results", []))
-        paging = data.get("paging", {})
-        after = paging.get("next", {}).get("after")
-        if not after:
-            break
-    return results
+    return _paginate_search("companies", payload)
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -167,134 +151,106 @@ def get_6qa_accounts(start: date, end: date) -> int:
 
 def _get_6qa_company_ids(start: date, end: date) -> set[str]:
     payload = {
-        "filterGroups": [{
-            "filters": _date_range_filter("n6sense_account_6qa_start_date", start, end)
-        }],
+        "filterGroups": [{"filters": _date_range_filter("n6sense_account_6qa_start_date", start, end)}],
         "properties": ["hs_object_id"],
-        "limit": 100,
     }
-    companies = _paginate_companies(payload)
-    return {c["id"] for c in companies}
+    return {c["id"] for c in _paginate_companies(payload)}
 
 
 def _get_ever_6qa_company_ids() -> set[str]:
     payload = {
-        "filterGroups": [{
-            "filters": [{"propertyName": "has_ever_been_6qa", "operator": "EQ", "value": "Yes"}]
-        }],
+        "filterGroups": [{"filters": [{"propertyName": "has_ever_been_6qa", "operator": "EQ", "value": "Yes"}]}],
         "properties": ["hs_object_id"],
-        "limit": 100,
     }
-    companies = _paginate_companies(payload)
-    return {c["id"] for c in companies}
+    return {c["id"] for c in _paginate_companies(payload)}
 
 
-def _contacts_associated_with_companies(company_ids: set[str], extra_filters: list[dict], props: list[str]) -> list[dict]:
+def _batch_company_ids_for(from_type: str, object_ids: list[str]) -> dict[str, set[str]]:
     """
-    Fetch contacts associated with a set of company IDs.
-    HubSpot does not support associationId filters in search directly,
-    so we query contacts per company via the associations endpoint and deduplicate.
+    Given a list of object IDs, return a map of object_id -> set of associated company IDs.
+    Uses the v4 batch associations endpoint: ceil(N/100) calls instead of N calls.
     """
-    all_contact_ids: set[str] = set()
-    for cid in company_ids:
+    url = f"{BASE_URL}/crm/v4/associations/{from_type}/companies/batch/read"
+    mapping: dict[str, set[str]] = {}
+    for i in range(0, len(object_ids), ASSOC_BATCH_SIZE):
+        chunk = object_ids[i : i + ASSOC_BATCH_SIZE]
         try:
-            time.sleep(RATE_LIMIT_DELAY)
-            url = f"{BASE_URL}/crm/v3/objects/companies/{cid}/associations/contacts"
-            data = _get(url)
-            for assoc in data.get("results", []):
-                all_contact_ids.add(str(assoc["id"]))
+            data = _post(url, {"inputs": [{"id": oid} for oid in chunk]})
+            for item in data.get("results", []):
+                from_id = str(item["from"]["id"])
+                mapping[from_id] = {str(r["toObjectId"]) for r in item.get("to", [])}
         except Exception as exc:
-            logger.warning("Failed fetching contacts for company %s: %s", cid, exc)
+            logger.warning("Batch association fetch failed (chunk %d): %s", i, exc)
+    return mapping
 
-    if not all_contact_ids:
-        return []
 
-    # Batch filter contacts by ID + extra filters
-    results = []
-    id_list = list(all_contact_ids)
-    chunk_size = 100
-    for i in range(0, len(id_list), chunk_size):
-        chunk = id_list[i : i + chunk_size]
-        payload = {
-            "filterGroups": [{
-                "filters": [{"propertyName": "hs_object_id", "operator": "IN", "values": chunk}] + extra_filters
-            }],
-            "properties": props,
-            "limit": 100,
-        }
-        try:
-            results.extend(_paginate_contacts(payload))
-        except Exception as exc:
-            logger.warning("Batch contact filter failed: %s", exc)
-    return results
+def _filter_by_company(object_ids: list[str], from_type: str, allowed_company_ids: set[str]) -> int:
+    """
+    Bulk-resolve company associations for object_ids, then count how many
+    have at least one associated company in allowed_company_ids.
+    """
+    if not object_ids or not allowed_company_ids:
+        return 0
+    mapping = _batch_company_ids_for(from_type, object_ids)
+    return sum(1 for oid in object_ids if mapping.get(oid, set()) & allowed_company_ids)
 
 
 def get_mqls_from_6qa_accounts(start: date, end: date) -> int:
     logger.info("Fetching MQLs from 6QA accounts")
-    company_ids = _get_ever_6qa_company_ids()
-    if not company_ids:
+    ever_6qa = _get_ever_6qa_company_ids()
+    if not ever_6qa:
         return 0
-    mql_filters = (
-        _date_range_filter("lead_mql_date", start, end)
-        + _not_rejected_filter()
-    )
-    contacts = _contacts_associated_with_companies(
-        company_ids, mql_filters, ["lead_mql_date", "hs_lead_status"]
-    )
-    logger.info("MQLs from 6QA accounts: %d", len(contacts))
-    return len(contacts)
+
+    # Bulk fetch all MQL contacts for the month — same query as get_leads()
+    filter_groups = [
+        {"filters": _date_range_filter("lead_mql_date", start, end) + _not_rejected_filter()},
+        {"filters": _date_range_filter("mql_date_stamp", start, end) + _not_rejected_filter()},
+    ]
+    contacts = _paginate_contacts({
+        "filterGroups": filter_groups,
+        "properties": ["lead_mql_date", "mql_date_stamp", "hs_lead_status"],
+    })
+    contact_ids = list({c["id"] for c in contacts})
+    logger.info("MQL contacts this month: %d — resolving company associations in bulk", len(contact_ids))
+
+    count = _filter_by_company(contact_ids, "contacts", ever_6qa)
+    logger.info("MQLs from 6QA accounts: %d", count)
+    return count
 
 
 def get_meetings_from_6qa_accounts(start: date, end: date) -> int:
     logger.info("Fetching meetings from 6QA accounts")
-    company_ids = _get_ever_6qa_company_ids()
-    if not company_ids:
+    ever_6qa = _get_ever_6qa_company_ids()
+    if not ever_6qa:
         return 0
-    meeting_filters = _date_range_filter("latest_meeting_handover", start, end)
-    contacts = _contacts_associated_with_companies(
-        company_ids, meeting_filters, ["latest_meeting_handover"]
-    )
-    logger.info("Meetings from 6QA accounts: %d", len(contacts))
-    return len(contacts)
+
+    contacts = _paginate_contacts({
+        "filterGroups": [{"filters": _date_range_filter("latest_meeting_handover", start, end)}],
+        "properties": ["latest_meeting_handover"],
+    })
+    contact_ids = list({c["id"] for c in contacts})
+    logger.info("Meeting contacts this month: %d — resolving company associations in bulk", len(contact_ids))
+
+    count = _filter_by_company(contact_ids, "contacts", ever_6qa)
+    logger.info("Meetings from 6QA accounts: %d", count)
+    return count
 
 
 def get_saos_from_6qa_accounts(start: date, end: date) -> int:
     logger.info("Fetching SAOs from 6QA accounts")
-    company_ids = _get_6qa_company_ids(start, end)
-    if not company_ids:
+    month_6qa = _get_6qa_company_ids(start, end)
+    if not month_6qa:
         return 0
 
-    all_deal_ids: set[str] = set()
-    for cid in company_ids:
-        try:
-            url = f"{BASE_URL}/crm/v3/objects/companies/{cid}/associations/deals"
-            data = _get(url)
-            for assoc in data.get("results", []):
-                all_deal_ids.add(str(assoc["id"]))
-        except Exception as exc:
-            logger.warning("Failed fetching deals for company %s: %s", cid, exc)
+    # Bulk fetch all SAO-qualified deals for the month, then filter by company in-memory
+    deals = _paginate_deals({
+        "filterGroups": [{"filters": _date_range_filter("date_sal_qualification__c", start, end)}],
+        "properties": ["date_sal_qualification__c"],
+    })
+    deal_ids = list({d["id"] for d in deals})
+    logger.info("SAO deals this month: %d — resolving company associations in bulk", len(deal_ids))
 
-    if not all_deal_ids:
-        return 0
-
-    count = 0
-    id_list = list(all_deal_ids)
-    for i in range(0, len(id_list), 100):
-        chunk = id_list[i : i + 100]
-        payload = {
-            "filterGroups": [{
-                "filters": (
-                    [{"propertyName": "hs_object_id", "operator": "IN", "values": chunk}]
-                    + _date_range_filter("date_sal_qualification__c", start, end)
-                )
-            }],
-            "properties": ["date_sal_qualification__c"],
-            "limit": 100,
-        }
-        try:
-            count += len(_paginate_deals(payload))
-        except Exception as exc:
-            logger.warning("SAO deal batch failed: %s", exc)
+    count = _filter_by_company(deal_ids, "deals", month_6qa)
     logger.info("SAOs from 6QA accounts: %d", count)
     return count
 
