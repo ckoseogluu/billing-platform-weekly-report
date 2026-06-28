@@ -1,0 +1,26 @@
+hubspot:
+  hub_id: "20300238"
+
+goals:
+  leads_goal: 80
+  mqls_goal: 40
+  sals_goal: 55
+  meetings_goal: 13
+
+report:
+  title: "BillingPlatform — Weekly Demand Gen Report"
+  filename_prefix: "BillingPlatform_WeeklyReport"
+
+email:
+  recipients: []  # Populated via REPORT_RECIPIENTS secret at runtime
+  subject: "BillingPlatform Weekly Demand Gen Report — {month} {year}"
+  body: |
+    Hi team,
+
+    Please find attached the Weekly Demand Gen Report for {month} {year}.
+
+    This report was automatically generated from HubSpot (Hub ID: 20300238).
+    Amber-highlighted rows require manual entry directly in the file.
+
+    Best,
+    Periti Digital
