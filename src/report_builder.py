@@ -35,7 +35,8 @@ THIN_BORDER = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
 
 SOURCE_AUTOMATED = "HubSpot CRM API"
 SOURCE_MANUAL = "⚠ Manual entry required"
-SOURCE_ADS = "HubSpot Ads API"
+SOURCE_ADS_MANUAL = "⚠ Manual entry required — add 'ads' scope to HubSpot Private App to automate"
+SOURCE_EMAIL_FALLBACK = "⚠ Manual entry required — email stats API unavailable"
 SOURCE_DASHBOARD = "HubSpot Dashboard (manual)"
 SOURCE_6SENSE = "⚠ Manual entry required — pull from 6Sense platform directly"
 SOURCE_FORMULA = "Calculated"
@@ -165,21 +166,29 @@ def build_sheet2(wb: Workbook, data: dict, year: int, month: int):
     _note_row(ws, "White = HubSpot API  |  Amber = Manual entry required")
     _header_row(ws, label)
 
-    error = "error" in data
+    # If the API call failed entirely, render all automated rows as amber
+    fallback = data.get("manual_fallback", False)
+
+    def _auto(key):
+        return (None, SOURCE_EMAIL_FALLBACK, FILL_AMBER) if fallback else (_val(data, key), SOURCE_AUTOMATED, FILL_WHITE)
+
+    sent_val, sent_src, sent_fill = _auto("emails_sent")
+    dr_val,   dr_src,   dr_fill   = _auto("delivery_rate")
+    or_val,   or_src,   or_fill   = _auto("open_rate")
+    ctr_val,  ctr_src,  ctr_fill  = _auto("click_through_rate")
 
     rows = [
-        (4,  "Emails Sent",                     _val(data, "emails_sent"),          SOURCE_AUTOMATED,  FILL_WHITE),
-        (5,  "Unique Contacts Receiving Emails", None,                               SOURCE_MANUAL,     FILL_AMBER),
-        (6,  "Conversion Rate",                 None,                               SOURCE_MANUAL,     FILL_AMBER),
-        (7,  "Delivery Rate",                   _val(data, "delivery_rate"),         SOURCE_AUTOMATED,  FILL_WHITE),
-        (8,  "Open Rate",                       _val(data, "open_rate"),             SOURCE_AUTOMATED,  FILL_WHITE),
-        (9,  "Click To Open Rate",              None,                               SOURCE_MANUAL,     FILL_AMBER),
-        (10, "Click Thru Rate",                 _val(data, "click_through_rate"),    SOURCE_AUTOMATED,  FILL_WHITE),
+        (4,  "Emails Sent",                     sent_val, sent_src, sent_fill),
+        (5,  "Unique Contacts Receiving Emails", None,     SOURCE_MANUAL,    FILL_AMBER),
+        (6,  "Conversion Rate",                 None,     SOURCE_MANUAL,    FILL_AMBER),
+        (7,  "Delivery Rate",                   dr_val,   dr_src,   dr_fill),
+        (8,  "Open Rate",                       or_val,   or_src,   or_fill),
+        (9,  "Click To Open Rate",              None,     SOURCE_MANUAL,    FILL_AMBER),
+        (10, "Click Thru Rate",                 ctr_val,  ctr_src,  ctr_fill),
     ]
 
     for r, metric, value, source, fill in rows:
-        is_error = isinstance(value, str) and value == "API ERROR"
-        _data_row(ws, r, metric, value, source, fill=fill, error=is_error)
+        _data_row(ws, r, metric, value, source, fill=fill)
 
     _apply_col_widths(ws, {1: 38, 2: 18, 3: 38})
     logger.info("Sheet 2 built")
@@ -187,81 +196,65 @@ def build_sheet2(wb: Workbook, data: dict, year: int, month: int):
 
 # ── Sheet 3: LinkedIn Metrics ───────────────────────────────────────────────────
 
-def build_sheet3(wb: Workbook, data: dict, year: int, month: int):
+def build_sheet3(wb: Workbook, year: int, month: int):
     ws = wb.create_sheet("LinkedIn Metrics")
     label = month_label(year, month)
 
     _title_row(ws, "BillingPlatform — LinkedIn Ad Metrics")
-    _note_row(ws, "Light red = HubSpot Ads API  |  Green = HubSpot Dashboard (manual)  |  Amber = Manual entry required")
+    _note_row(ws, "All rows require manual entry — add 'ads' scope to HubSpot Private App to automate")
     _header_row(ws, label)
 
-    error = "error" in data
-
-    brand_spend = _val(data, "brand_spend")
-    brand_mqls = _val(data, "brand_mqls")
-    abm_spend = _val(data, "abm_spend")
-    abm_mqls = _val(data, "abm_mqls")
-    total_spend = _val(data, "total_paid_social_spend")
-    total_cpl = _val(data, "total_cpl")
-
-    rows = [
-        (4,  "Brand Spend ($)",                         brand_spend,               SOURCE_ADS,       FILL_RED_LIGHT),
-        (5,  "MQLs (Brand)",                            brand_mqls,                SOURCE_ADS,       FILL_RED_LIGHT),
-        (6,  "Avg CTR",                                 _val(data, "avg_ctr"),     SOURCE_ADS,       FILL_RED_LIGHT),
-        (7,  "Clicks",                                  _val(data, "clicks"),      SOURCE_ADS,       FILL_RED_LIGHT),
-        (8,  "CPL ($)",                                 _val(data, "cpl"),         SOURCE_FORMULA,   FILL_RED_LIGHT),
-        (9,  "Impressions",                             _val(data, "impressions"), SOURCE_ADS,       FILL_RED_LIGHT),
-        (10, "Avg CPM ($)",                             _val(data, "avg_cpm"),     SOURCE_ADS,       FILL_RED_LIGHT),
-        (11, "ABM Spend ($)",                           abm_spend,                 SOURCE_ADS,       FILL_RED_LIGHT),
-        (12, "Total ABM MQLs",                         abm_mqls,                  SOURCE_ADS,       FILL_RED_LIGHT),
-        (13, "Total ABM Qualified/Converted MQLs",     None,                      SOURCE_DASHBOARD, FILL_GREEN),
-        (14, "Qualified MQL Production Rate",           "N/A — manual row 13",     SOURCE_FORMULA,   FILL_GREEN),
-        (15, "Total Paid Social Spend ($)",             total_spend,               SOURCE_FORMULA,   FILL_RED_LIGHT),
-        (16, "Total CPL ($)",                          total_cpl,                  SOURCE_FORMULA,   FILL_RED_LIGHT),
-        (17, "Total CPL for Converted Leads Only ($)", "N/A — manual row 13",     SOURCE_FORMULA,   FILL_GREEN),
+    metrics = [
+        "Brand Spend ($)",
+        "MQLs (Brand)",
+        "Avg CTR",
+        "Clicks",
+        "CPL ($)",
+        "Impressions",
+        "Avg CPM ($)",
+        "ABM Spend ($)",
+        "Total ABM MQLs",
+        "Total ABM Qualified/Converted MQLs",
+        "Qualified MQL Production Rate",
+        "Total Paid Social Spend ($)",
+        "Total CPL ($)",
+        "Total CPL for Converted Leads Only ($)",
     ]
+    for i, metric in enumerate(metrics, start=4):
+        _data_row(ws, i, metric, None, SOURCE_ADS_MANUAL, fill=FILL_AMBER)
 
-    for r, metric, value, source, fill in rows:
-        is_error = isinstance(value, str) and value == "API ERROR"
-        _data_row(ws, r, metric, value, source, fill=fill, error=is_error)
-
-    _apply_col_widths(ws, {1: 42, 2: 18, 3: 42})
+    _apply_col_widths(ws, {1: 42, 2: 18, 3: 58})
     logger.info("Sheet 3 built")
 
 
 # ── Sheet 4: Google Metrics ─────────────────────────────────────────────────────
 
-def build_sheet4(wb: Workbook, data: dict, year: int, month: int):
+def build_sheet4(wb: Workbook, year: int, month: int):
     ws = wb.create_sheet("Google Metrics")
     label = month_label(year, month)
 
     _title_row(ws, "BillingPlatform — Google Ad Metrics")
-    _note_row(ws, "Light red = HubSpot Ads API  |  Green = HubSpot Dashboard (manual)")
+    _note_row(ws, "All rows require manual entry — add 'ads' scope to HubSpot Private App to automate")
     _header_row(ws, label)
 
-    total_cost = _val(data, "total_cost")
-    total_mqls = _val(data, "total_mqls")
-
-    rows = [
-        (4,  "Total Cost ($)",                          total_cost,                        SOURCE_ADS,       FILL_RED_LIGHT),
-        (5,  "Total MQLs",                              total_mqls,                        SOURCE_ADS,       FILL_RED_LIGHT),
-        (6,  "Cost Per Lead ($)",                       _val(data, "cost_per_lead"),       SOURCE_FORMULA,   FILL_RED_LIGHT),
-        (7,  "Conversion Rate",                         _val(data, "conversion_rate"),     SOURCE_ADS,       FILL_RED_LIGHT),
-        (8,  "Clicks",                                  _val(data, "clicks"),              SOURCE_ADS,       FILL_RED_LIGHT),
-        (9,  "CTR",                                     _val(data, "ctr"),                 SOURCE_ADS,       FILL_RED_LIGHT),
-        (10, "Avg Cost Per Click ($)",                  _val(data, "avg_cpc"),             SOURCE_ADS,       FILL_RED_LIGHT),
-        (11, "Impressions",                             _val(data, "impressions"),         SOURCE_ADS,       FILL_RED_LIGHT),
-        (12, "Converted Leads / Qualified MQLs",       None,                              SOURCE_DASHBOARD, FILL_GREEN),
-        (13, "Qualified MQL Production Rate",           "N/A — manual row 12",             SOURCE_FORMULA,   FILL_GREEN),
-        (14, "Total CPL ($)",                           _val(data, "total_cpl"),           SOURCE_FORMULA,   FILL_RED_LIGHT),
-        (15, "Total CPL for Converted Leads Only ($)", "N/A — manual row 12",             SOURCE_FORMULA,   FILL_GREEN),
+    metrics = [
+        "Total Cost ($)",
+        "Total MQLs",
+        "Cost Per Lead ($)",
+        "Conversion Rate",
+        "Clicks",
+        "CTR",
+        "Avg Cost Per Click ($)",
+        "Impressions",
+        "Converted Leads / Qualified MQLs",
+        "Qualified MQL Production Rate",
+        "Total CPL ($)",
+        "Total CPL for Converted Leads Only ($)",
     ]
+    for i, metric in enumerate(metrics, start=4):
+        _data_row(ws, i, metric, None, SOURCE_ADS_MANUAL, fill=FILL_AMBER)
 
-    for r, metric, value, source, fill in rows:
-        is_error = isinstance(value, str) and value == "API ERROR"
-        _data_row(ws, r, metric, value, source, fill=fill, error=is_error)
-
-    _apply_col_widths(ws, {1: 42, 2: 18, 3: 42})
+    _apply_col_widths(ws, {1: 42, 2: 18, 3: 58})
     logger.info("Sheet 4 built")
 
 
@@ -300,8 +293,6 @@ def build_sheet5(wb: Workbook, year: int, month: int):
 def build_report(
     sheet1_data: dict,
     sheet2_data: dict,
-    sheet3_data: dict,
-    sheet4_data: dict,
     config: dict,
     year: int,
     month: int,
@@ -313,8 +304,8 @@ def build_report(
 
     build_sheet1(wb, sheet1_data, config, year, month)
     build_sheet2(wb, sheet2_data, year, month)
-    build_sheet3(wb, sheet3_data, year, month)
-    build_sheet4(wb, sheet4_data, year, month)
+    build_sheet3(wb, year, month)
+    build_sheet4(wb, year, month)
     build_sheet5(wb, year, month)
 
     wb.save(output_path)

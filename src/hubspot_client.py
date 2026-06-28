@@ -195,15 +195,14 @@ def get_email_metrics(start: date, end: date) -> dict[str, Any]:
     params = {
         "startTimestamp": to_epoch_ms(start),
         "endTimestamp": end_of_day_epoch_ms(end),
-        "limit": 100,
+        "limit": 50,
     }
-    aggregated = {
-        "numSent": 0,
-        "delivered": 0,
-        "open": 0,
-        "click": 0,
-        "total_emails": 0,
-    }
+    total_sent = 0
+    delivery_sum = 0.0
+    open_sum = 0.0
+    ctr_sum = 0.0
+    weighted_n = 0
+
     after = None
     while True:
         if after:
@@ -211,164 +210,39 @@ def get_email_metrics(start: date, end: date) -> dict[str, Any]:
         try:
             data = _get(url, params)
         except Exception as exc:
-            logger.error("Email metrics API error: %s", exc)
-            return {"error": str(exc)}
+            logger.error("Email metrics API error: %s — falling back to manual entry", exc)
+            return {"manual_fallback": True}
 
         for item in data.get("results", []):
-            stats = item.get("statistics", {})
-            aggregated["numSent"] += stats.get("numSent", 0) or 0
-            aggregated["delivered"] += stats.get("numDelivered", 0) or 0
-            aggregated["open"] += stats.get("numOpened", 0) or 0
-            aggregated["click"] += stats.get("numClicked", 0) or 0
-            aggregated["total_emails"] += 1
+            s = item.get("statistics", {})
+            # HubSpot returns numSent at the top level or inside statistics
+            sent = int(s.get("numSent", s.get("sent", 0)) or 0)
+            total_sent += sent
+            # Rates are 0–1 floats; weight by sent count for a meaningful aggregate
+            dr = s.get("deliveryRate")
+            if dr is not None and sent > 0:
+                delivery_sum += float(dr) * sent
+                open_sum += float(s.get("openRate", 0) or 0) * sent
+                ctr_sum += float(s.get("clickThroughRate", 0) or 0) * sent
+                weighted_n += sent
 
-        paging = data.get("paging", {})
-        after = paging.get("next", {}).get("after")
+        after = data.get("paging", {}).get("next", {}).get("after")
         if not after:
             break
 
-    sent = aggregated["numSent"]
-    delivered = aggregated["delivered"]
-    opens = aggregated["open"]
-    clicks = aggregated["click"]
+    if total_sent == 0:
+        logger.info("Email metrics: no emails found for period")
+        return {"emails_sent": 0, "delivery_rate": "N/A", "open_rate": "N/A", "click_through_rate": "N/A"}
 
-    delivery_rate = f"{(delivered / sent * 100):.1f}%" if sent else "N/A"
-    open_rate = f"{(opens / delivered * 100):.1f}%" if delivered else "N/A"
-    ctr = f"{(clicks / delivered * 100):.1f}%" if delivered else "N/A"
+    n = weighted_n or 1
+    delivery_rate = f"{(delivery_sum / n * 100):.1f}%"
+    open_rate = f"{(open_sum / n * 100):.1f}%"
+    ctr = f"{(ctr_sum / n * 100):.1f}%"
 
-    logger.info("Email metrics: sent=%d, delivered=%d, opens=%d, clicks=%d", sent, delivered, opens, clicks)
+    logger.info("Email metrics: sent=%d, delivery=%s, open=%s, ctr=%s", total_sent, delivery_rate, open_rate, ctr)
     return {
-        "emails_sent": sent,
+        "emails_sent": total_sent,
         "delivery_rate": delivery_rate,
         "open_rate": open_rate,
         "click_through_rate": ctr,
     }
-
-
-# ── Ads Helpers ─────────────────────────────────────────────────────────────────
-
-def _get_ad_accounts() -> list[dict]:
-    data = _get(f"{BASE_URL}/ads/v3/accounts", {"limit": 100})
-    return data.get("results", [])
-
-
-def _get_campaigns_for_account(account_id: str, channel: str) -> list[dict]:
-    params = {"accountId": account_id, "limit": 100}
-    data = _get(f"{BASE_URL}/ads/v3/campaigns", params)
-    results = data.get("results", [])
-    return [c for c in results if channel.lower() in c.get("type", "").lower()]
-
-
-def _get_campaign_stats(campaign_id: str, account_id: str, start: date, end: date) -> dict:
-    params = {
-        "campaignId": campaign_id,
-        "accountId": account_id,
-        "startDate": start.strftime("%Y-%m-%d"),
-        "endDate": end.strftime("%Y-%m-%d"),
-    }
-    try:
-        data = _get(f"{BASE_URL}/ads/v3/statistics/campaign", params)
-        return data.get("statistics", {})
-    except Exception as exc:
-        logger.warning("Campaign stats failed for %s: %s", campaign_id, exc)
-        return {}
-
-
-def _aggregate_ads(accounts: list[dict], channel: str, campaign_type_hint: str, start: date, end: date) -> dict:
-    totals = {"spend": 0.0, "impressions": 0, "clicks": 0, "conversions": 0, "cpm_sum": 0.0, "ctr_sum": 0.0, "n": 0}
-
-    for account in accounts:
-        acct_id = account.get("id") or account.get("accountId")
-        if not acct_id:
-            continue
-        campaigns = _get_campaigns_for_account(str(acct_id), channel)
-        for camp in campaigns:
-            if campaign_type_hint and campaign_type_hint.lower() not in camp.get("name", "").lower():
-                continue
-            camp_id = camp.get("id")
-            stats = _get_campaign_stats(str(camp_id), str(acct_id), start, end)
-            totals["spend"] += float(stats.get("spend", 0) or 0)
-            totals["impressions"] += int(stats.get("impressions", 0) or 0)
-            totals["clicks"] += int(stats.get("clicks", 0) or 0)
-            totals["conversions"] += int(stats.get("conversions", 0) or 0)
-            cpm = stats.get("cpm") or 0
-            ctr = stats.get("ctr") or 0
-            if cpm or ctr:
-                totals["cpm_sum"] += float(cpm)
-                totals["ctr_sum"] += float(ctr)
-                totals["n"] += 1
-
-    n = totals["n"] or 1
-    return {
-        "spend": round(totals["spend"], 2),
-        "impressions": totals["impressions"],
-        "clicks": totals["clicks"],
-        "conversions": totals["conversions"],
-        "avg_cpm": round(totals["cpm_sum"] / n, 2),
-        "avg_ctr": f"{(totals['ctr_sum'] / n * 100):.2f}%",
-    }
-
-
-# ── Sheet 3: LinkedIn Metrics ───────────────────────────────────────────────────
-
-def get_linkedin_metrics(start: date, end: date) -> dict[str, Any]:
-    logger.info("Fetching LinkedIn ad metrics")
-    try:
-        accounts = _get_ad_accounts()
-        brand = _aggregate_ads(accounts, "LINKEDIN", "brand", start, end)
-        abm = _aggregate_ads(accounts, "LINKEDIN", "abm", start, end)
-
-        brand_spend = brand["spend"]
-        brand_mqls = brand["conversions"]
-        abm_spend = abm["spend"]
-        abm_mqls = abm["conversions"]
-        total_spend = brand_spend + abm_spend
-        total_mqls = brand_mqls + abm_mqls
-
-        cpl = round(brand_spend / brand_mqls, 2) if brand_mqls else "N/A"
-        total_cpl = round(total_spend / total_mqls, 2) if total_mqls else "N/A"
-
-        return {
-            "brand_spend": brand_spend,
-            "brand_mqls": brand_mqls,
-            "avg_ctr": brand["avg_ctr"],
-            "clicks": brand["clicks"],
-            "cpl": cpl,
-            "impressions": brand["impressions"],
-            "avg_cpm": brand["avg_cpm"],
-            "abm_spend": abm_spend,
-            "abm_mqls": abm_mqls,
-            "total_paid_social_spend": total_spend,
-            "total_cpl": total_cpl,
-        }
-    except Exception as exc:
-        logger.error("LinkedIn metrics error: %s", exc)
-        return {"error": str(exc)}
-
-
-# ── Sheet 4: Google Metrics ─────────────────────────────────────────────────────
-
-def get_google_metrics(start: date, end: date) -> dict[str, Any]:
-    logger.info("Fetching Google ad metrics")
-    try:
-        accounts = _get_ad_accounts()
-        google = _aggregate_ads(accounts, "GOOGLE", "", start, end)
-
-        total_cost = google["spend"]
-        total_mqls = google["conversions"]
-        cpl = round(total_cost / total_mqls, 2) if total_mqls else "N/A"
-
-        return {
-            "total_cost": total_cost,
-            "total_mqls": total_mqls,
-            "cost_per_lead": cpl,
-            "conversion_rate": google["avg_ctr"],
-            "clicks": google["clicks"],
-            "ctr": google["avg_ctr"],
-            "avg_cpc": round(total_cost / google["clicks"], 2) if google["clicks"] else "N/A",
-            "impressions": google["impressions"],
-            "total_cpl": cpl,
-        }
-    except Exception as exc:
-        logger.error("Google metrics error: %s", exc)
-        return {"error": str(exc)}

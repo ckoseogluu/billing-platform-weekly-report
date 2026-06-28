@@ -22,8 +22,6 @@ from hubspot_client import (
     get_sals_from_mqls,
     get_meetings,
     get_email_metrics,
-    get_linkedin_metrics,
-    get_google_metrics,
 )
 from report_builder import build_report
 from email_sender import send_report
@@ -67,19 +65,7 @@ def main():
         sheet2_data = get_email_metrics(start, end)
     except Exception as exc:
         logger.error("Email metrics failed: %s", exc, exc_info=True)
-        sheet2_data = {"error": str(exc)}
-
-    try:
-        sheet3_data = get_linkedin_metrics(start, end)
-    except Exception as exc:
-        logger.error("LinkedIn metrics failed: %s", exc, exc_info=True)
-        sheet3_data = {"error": str(exc)}
-
-    try:
-        sheet4_data = get_google_metrics(start, end)
-    except Exception as exc:
-        logger.error("Google metrics failed: %s", exc, exc_info=True)
-        sheet4_data = {"error": str(exc)}
+        sheet2_data = {"manual_fallback": True}
 
     # Build output path in project root
     prefix = config["report"]["filename_prefix"]
@@ -89,8 +75,6 @@ def main():
     build_report(
         sheet1_data=sheet1_data,
         sheet2_data=sheet2_data,
-        sheet3_data=sheet3_data,
-        sheet4_data=sheet4_data,
         config=config,
         year=year,
         month=month,
