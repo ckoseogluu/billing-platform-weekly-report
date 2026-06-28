@@ -13,7 +13,7 @@ except ImportError:
 # Allow imports from src/ when running as `python src/main.py`
 sys.path.insert(0, str(Path(__file__).parent))
 
-from utils import setup_logging, load_config, get_report_period, month_label
+from utils import setup_logging, load_config, get_report_period, period_label
 from hubspot_client import (
     get_product_pipeline_created,
     get_leads,
@@ -55,7 +55,7 @@ def main():
 
     config = load_config()
     year, month, start, end = get_report_period()
-    label = month_label(year, month)
+    label = period_label(start, end)
     logger.info("Report period: %s (%s → %s)", label, start, end)
 
     # Collect all data — each section is isolated so one failure doesn't block others
@@ -76,8 +76,7 @@ def main():
         sheet1_data=sheet1_data,
         sheet2_data=sheet2_data,
         config=config,
-        year=year,
-        month=month,
+        label=label,
         output_path=output_path,
     )
 
@@ -89,8 +88,9 @@ def main():
 
     subject_tpl = config["email"]["subject"]
     body_tpl = config["email"]["body"]
-    subject = subject_tpl.format(month=label.split()[0], year=year)
-    body = body_tpl.format(month=label.split()[0], year=year)
+    month_abbr = start.strftime("%b")
+    subject = subject_tpl.format(month=month_abbr, year=year)
+    body = body_tpl.format(month=month_abbr, year=year)
 
     try:
         send_report(output_path, subject, body, recipients)

@@ -8,7 +8,7 @@ from openpyxl.styles import (
 )
 from openpyxl.utils import get_column_letter
 
-from utils import month_label, pct
+from utils import pct
 
 logger = logging.getLogger(__name__)
 
@@ -104,9 +104,8 @@ def _val(data: dict, key: str, fallback="API ERROR") -> Any:
 
 # ── Sheet 1: Lead / MQL Metrics ────────────────────────────────────────────────
 
-def build_sheet1(wb: Workbook, data: dict, config: dict, year: int, month: int):
+def build_sheet1(wb: Workbook, data: dict, config: dict, label: str):
     ws = wb.create_sheet("Lead & MQL Metrics")
-    label = month_label(year, month)
     goals = config["goals"]
 
     _title_row(ws, "BillingPlatform — Lead & MQL Metrics")
@@ -158,9 +157,8 @@ def build_sheet1(wb: Workbook, data: dict, config: dict, year: int, month: int):
 
 # ── Sheet 2: Email Metrics ──────────────────────────────────────────────────────
 
-def build_sheet2(wb: Workbook, data: dict, year: int, month: int):
+def build_sheet2(wb: Workbook, data: dict, label: str):
     ws = wb.create_sheet("Email Metrics")
-    label = month_label(year, month)
 
     _title_row(ws, "BillingPlatform — Email Metrics")
     _note_row(ws, "White = HubSpot API  |  Amber = Manual entry required")
@@ -196,9 +194,8 @@ def build_sheet2(wb: Workbook, data: dict, year: int, month: int):
 
 # ── Sheet 3: LinkedIn Metrics ───────────────────────────────────────────────────
 
-def build_sheet3(wb: Workbook, year: int, month: int):
+def build_sheet3(wb: Workbook, label: str):
     ws = wb.create_sheet("LinkedIn Metrics")
-    label = month_label(year, month)
 
     _title_row(ws, "BillingPlatform — LinkedIn Ad Metrics")
     _note_row(ws, "All rows require manual entry — add 'ads' scope to HubSpot Private App to automate")
@@ -229,9 +226,8 @@ def build_sheet3(wb: Workbook, year: int, month: int):
 
 # ── Sheet 4: Google Metrics ─────────────────────────────────────────────────────
 
-def build_sheet4(wb: Workbook, year: int, month: int):
+def build_sheet4(wb: Workbook, label: str):
     ws = wb.create_sheet("Google Metrics")
-    label = month_label(year, month)
 
     _title_row(ws, "BillingPlatform — Google Ad Metrics")
     _note_row(ws, "All rows require manual entry — add 'ads' scope to HubSpot Private App to automate")
@@ -260,9 +256,8 @@ def build_sheet4(wb: Workbook, year: int, month: int):
 
 # ── Sheet 5: 6Sense Metrics ─────────────────────────────────────────────────────
 
-def build_sheet5(wb: Workbook, year: int, month: int):
+def build_sheet5(wb: Workbook, label: str):
     ws = wb.create_sheet("6Sense Metrics")
-    label = month_label(year, month)
 
     _title_row(ws, "BillingPlatform — 6Sense Metrics")
     _note_row(ws, "All rows require manual entry — 6Sense does not have a HubSpot API integration")
@@ -294,19 +289,18 @@ def build_report(
     sheet1_data: dict,
     sheet2_data: dict,
     config: dict,
-    year: int,
-    month: int,
+    label: str,
     output_path: str,
 ):
     wb = Workbook()
     # Remove default empty sheet
     wb.remove(wb.active)
 
-    build_sheet1(wb, sheet1_data, config, year, month)
-    build_sheet2(wb, sheet2_data, year, month)
-    build_sheet3(wb, year, month)
-    build_sheet4(wb, year, month)
-    build_sheet5(wb, year, month)
+    build_sheet1(wb, sheet1_data, config, label)
+    build_sheet2(wb, sheet2_data, label)
+    build_sheet3(wb, label)
+    build_sheet4(wb, label)
+    build_sheet5(wb, label)
 
     wb.save(output_path)
     logger.info("Report saved to %s", output_path)

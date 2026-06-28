@@ -57,6 +57,21 @@ def month_label(year: int, month: int) -> str:
     return datetime(year, month, 1).strftime("%b %Y")
 
 
+def period_label(start: date, end: date) -> str:
+    """Human-readable column header for the report date range.
+
+    Full calendar month  → "Jun 2026"
+    Current month to date → "Jun 1–28, 2026"
+    Cross-month range    → "May 15 – Jun 28, 2026"
+    """
+    if start.year == end.year and start.month == end.month:
+        last_of_month = (start.replace(day=1) + relativedelta(months=1)) - relativedelta(days=1)
+        if start.day == 1 and end == last_of_month:
+            return start.strftime("%b %Y")
+        return f"{start.strftime('%b')} {start.day}–{end.day}, {start.year}"
+    return f"{start.strftime('%b %d')} – {end.strftime('%b %d, %Y')}"
+
+
 def to_epoch_ms(d: date) -> int:
     return int(datetime(d.year, d.month, d.day).timestamp() * 1000)
 
