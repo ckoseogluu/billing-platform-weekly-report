@@ -135,19 +135,16 @@ def build_sheet1(wb: Workbook, data: dict, config: dict, year: int, month: int):
         (9,  "MQLs (Goal)",                     mqls_goal,                     "config.yaml"),
         (10, "MQLs (Goal Attainment %)",        pct(mqls_actual, mqls_goal) if not error else "N/A", SOURCE_FORMULA),
         (11, "6QA Accounts",                    _val(data, "six_qa_accounts"),  SOURCE_AUTOMATED),
-        (12, "MQLs from 6QA Accounts",          _val(data, "mqls_from_6qa"),   SOURCE_AUTOMATED),
-        (13, "Meetings from 6QA Accounts",      _val(data, "meetings_from_6qa"), SOURCE_AUTOMATED),
-        (14, "SAOs from 6QA Accounts",          _val(data, "saos_from_6qa"),   SOURCE_AUTOMATED),
-        (15, "SALs from MQLs (Actual)",         sals_actual,                   SOURCE_AUTOMATED),
-        (16, "SALs (Goal)",                     sals_goal,                     "config.yaml"),
-        (17, "SALs (Goal Attainment %)",        pct(sals_actual, sals_goal) if not error else "N/A", SOURCE_FORMULA),
-        (18, "Meetings (Actual)",               meetings_actual,               SOURCE_AUTOMATED),
-        (19, "Meetings (Goal)",                 meetings_goal,                 "config.yaml"),
-        (20, "Meetings (Goal Attainment %)",    pct(meetings_actual, meetings_goal) if not error else "N/A", SOURCE_FORMULA),
+        (12, "SALs from MQLs (Actual)",         sals_actual,                   SOURCE_AUTOMATED),
+        (13, "SALs (Goal)",                     sals_goal,                     "config.yaml"),
+        (14, "SALs (Goal Attainment %)",        pct(sals_actual, sals_goal) if not error else "N/A", SOURCE_FORMULA),
+        (15, "Meetings (Actual)",               meetings_actual,               SOURCE_AUTOMATED),
+        (16, "Meetings (Goal)",                 meetings_goal,                 "config.yaml"),
+        (17, "Meetings (Goal Attainment %)",    pct(meetings_actual, meetings_goal) if not error else "N/A", SOURCE_FORMULA),
     ]
 
-    formula_rows = {7, 10, 17, 20}
-    goal_rows = {6, 9, 16, 19}
+    formula_rows = {7, 10, 14, 17}
+    goal_rows = {6, 9, 13, 16}
 
     for r, metric, value, source in rows:
         is_error = isinstance(value, str) and value == "API ERROR"

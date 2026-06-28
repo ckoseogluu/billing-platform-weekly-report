@@ -12,7 +12,6 @@ logger = logging.getLogger(__name__)
 
 BASE_URL = "https://api.hubapi.com"
 RATE_LIMIT_DELAY = 0.15  # seconds between API calls
-ASSOC_BATCH_SIZE = 100   # v4 batch associations endpoint limit
 SEARCH_PAGE_SIZE = 200   # CRM search max page size
 
 
@@ -148,111 +147,6 @@ def get_6qa_accounts(start: date, end: date) -> int:
     logger.info("6QA accounts: %d", len(companies))
     return len(companies)
 
-
-def _get_6qa_company_ids(start: date, end: date) -> set[str]:
-    payload = {
-        "filterGroups": [{"filters": _date_range_filter("n6sense_account_6qa_start_date", start, end)}],
-        "properties": ["hs_object_id"],
-    }
-    return {c["id"] for c in _paginate_companies(payload)}
-
-
-def _get_ever_6qa_company_ids() -> set[str]:
-    payload = {
-        "filterGroups": [{"filters": [{"propertyName": "has_ever_been_6qa", "operator": "EQ", "value": "Yes"}]}],
-        "properties": ["hs_object_id"],
-    }
-    return {c["id"] for c in _paginate_companies(payload)}
-
-
-def _batch_company_ids_for(from_type: str, object_ids: list[str]) -> dict[str, set[str]]:
-    """
-    Given a list of object IDs, return a map of object_id -> set of associated company IDs.
-    Uses the v4 batch associations endpoint: ceil(N/100) calls instead of N calls.
-    """
-    url = f"{BASE_URL}/crm/v4/associations/{from_type}/companies/batch/read"
-    mapping: dict[str, set[str]] = {}
-    for i in range(0, len(object_ids), ASSOC_BATCH_SIZE):
-        chunk = object_ids[i : i + ASSOC_BATCH_SIZE]
-        try:
-            data = _post(url, {"inputs": [{"id": oid} for oid in chunk]})
-            for item in data.get("results", []):
-                from_id = str(item["from"]["id"])
-                mapping[from_id] = {str(r["toObjectId"]) for r in item.get("to", [])}
-        except Exception as exc:
-            logger.warning("Batch association fetch failed (chunk %d): %s", i, exc)
-    return mapping
-
-
-def _filter_by_company(object_ids: list[str], from_type: str, allowed_company_ids: set[str]) -> int:
-    """
-    Bulk-resolve company associations for object_ids, then count how many
-    have at least one associated company in allowed_company_ids.
-    """
-    if not object_ids or not allowed_company_ids:
-        return 0
-    mapping = _batch_company_ids_for(from_type, object_ids)
-    return sum(1 for oid in object_ids if mapping.get(oid, set()) & allowed_company_ids)
-
-
-def get_mqls_from_6qa_accounts(start: date, end: date) -> int:
-    logger.info("Fetching MQLs from 6QA accounts")
-    ever_6qa = _get_ever_6qa_company_ids()
-    if not ever_6qa:
-        return 0
-
-    # Bulk fetch all MQL contacts for the month — same query as get_leads()
-    filter_groups = [
-        {"filters": _date_range_filter("lead_mql_date", start, end) + _not_rejected_filter()},
-        {"filters": _date_range_filter("mql_date_stamp", start, end) + _not_rejected_filter()},
-    ]
-    contacts = _paginate_contacts({
-        "filterGroups": filter_groups,
-        "properties": ["lead_mql_date", "mql_date_stamp", "hs_lead_status"],
-    })
-    contact_ids = list({c["id"] for c in contacts})
-    logger.info("MQL contacts this month: %d — resolving company associations in bulk", len(contact_ids))
-
-    count = _filter_by_company(contact_ids, "contacts", ever_6qa)
-    logger.info("MQLs from 6QA accounts: %d", count)
-    return count
-
-
-def get_meetings_from_6qa_accounts(start: date, end: date) -> int:
-    logger.info("Fetching meetings from 6QA accounts")
-    ever_6qa = _get_ever_6qa_company_ids()
-    if not ever_6qa:
-        return 0
-
-    contacts = _paginate_contacts({
-        "filterGroups": [{"filters": _date_range_filter("latest_meeting_handover", start, end)}],
-        "properties": ["latest_meeting_handover"],
-    })
-    contact_ids = list({c["id"] for c in contacts})
-    logger.info("Meeting contacts this month: %d — resolving company associations in bulk", len(contact_ids))
-
-    count = _filter_by_company(contact_ids, "contacts", ever_6qa)
-    logger.info("Meetings from 6QA accounts: %d", count)
-    return count
-
-
-def get_saos_from_6qa_accounts(start: date, end: date) -> int:
-    logger.info("Fetching SAOs from 6QA accounts")
-    month_6qa = _get_6qa_company_ids(start, end)
-    if not month_6qa:
-        return 0
-
-    # Bulk fetch all SAO-qualified deals for the month, then filter by company in-memory
-    deals = _paginate_deals({
-        "filterGroups": [{"filters": _date_range_filter("date_sal_qualification__c", start, end)}],
-        "properties": ["date_sal_qualification__c"],
-    })
-    deal_ids = list({d["id"] for d in deals})
-    logger.info("SAO deals this month: %d — resolving company associations in bulk", len(deal_ids))
-
-    count = _filter_by_company(deal_ids, "deals", month_6qa)
-    logger.info("SAOs from 6QA accounts: %d", count)
-    return count
 
 
 def get_sals_from_mqls(start: date, end: date) -> int:
